@@ -247,10 +247,17 @@ Just paste a WTG comment link and I'll do the rest!"""
             webhook_url=f"{webhook_url}/webhook"
         )
     
-    def run_polling(self):
+    def run_polling(self, port: int = 10000):
         """Run bot with polling (for development and simple deployments)"""
         logger.info("Starting bot with long polling...")
+        logger.info(f"Starting health check server on port {port}")
         logger.info("Press Ctrl+C to stop the bot")
+        
+        # Start health check server in a separate thread for Render.com compatibility
+        health_server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+        health_thread = threading.Thread(target=health_server.serve_forever, daemon=True)
+        health_thread.start()
+        logger.info(f"Health check server started at http://0.0.0.0:{port}/health")
         
         try:
             # Use simple polling - the Application handles all the configuration internally
@@ -259,8 +266,10 @@ Just paste a WTG comment link and I'll do the rest!"""
             )
         except KeyboardInterrupt:
             logger.info("Received interrupt signal, shutting down gracefully...")
+            health_server.shutdown()
         except Exception as e:
             logger.error(f"Error in polling mode: {e}")
+            health_server.shutdown()
             raise
 
 
@@ -285,7 +294,7 @@ def main():
     else:
         logger.info("Running in polling mode (recommended for development)")
         logger.info("To use webhook mode, set WEBHOOK_URL environment variable")
-        bot.run_polling()
+        bot.run_polling(port)
 
 
 if __name__ == "__main__":
