@@ -139,13 +139,13 @@ Just paste a WTG comment link and I'll do the rest!"""
                 parse_mode=ParseMode.HTML
             )
             
-            # Scrape the page
-            wtg_data = await self._scrape_wtg_page(url)
+            # Scrape the page with retry logic
+            wtg_data = await self._scrape_wtg_page_with_updates(url, processing_msg)
             
             if not wtg_data:
                 await processing_msg.edit_text(
                     f"❌ Failed to extract data from: {url}\n\n"
-                    "The page might be unavailable or the format has changed."
+                    "The page might be unavailable or temporarily inaccessible. Please try again later."
                 )
                 return
             
@@ -159,19 +159,47 @@ Just paste a WTG comment link and I'll do the rest!"""
                 "Please try again later."
             )
     
-    async def _scrape_wtg_page(self, url: str) -> Optional[WTGData]:
-        """Scrape WTG page in a separate thread to avoid blocking"""
+    async def _scrape_wtg_page_with_updates(self, url: str, processing_msg) -> Optional[WTGData]:
+        """Scrape WTG page with user feedback on retry attempts"""
         loop = asyncio.get_event_loop()
         
         def scrape():
             return scraper.scrape_game_page(url)
         
-        try:
-            wtg_data = await loop.run_in_executor(None, scrape)
-            return wtg_data
-        except Exception as e:
-            logger.error(f"Error in async scraping: {e}")
-            return None
+        max_retries = 3
+        retry_delay = 2  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Scraping attempt {attempt + 1}/{max_retries} for URL: {url}")
+                
+                # Update message for retry attempts
+                if attempt > 0:
+                    await processing_msg.edit_text(
+                        f"🔄 Processing WTG link... (attempt {attempt + 1}/{max_retries})",
+                        parse_mode=ParseMode.HTML
+                    )
+                
+                wtg_data = await loop.run_in_executor(None, scrape)
+                
+                if wtg_data:
+                    if attempt > 0:
+                        logger.info(f"Successfully scraped on attempt {attempt + 1}")
+                    return wtg_data
+                else:
+                    logger.warning(f"Scraping returned None on attempt {attempt + 1}")
+                    
+            except Exception as e:
+                logger.error(f"Error in async scraping attempt {attempt + 1}: {e}")
+            
+            # If not the last attempt, wait before retrying
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 1.5  # Exponential backoff
+        
+        logger.error(f"All {max_retries} scraping attempts failed for URL: {url}")
+        return None
     
     async def _send_game_info(self, update: Update, wtg_data: WTGData, processing_msg):
         """Send formatted game information with image if available"""
