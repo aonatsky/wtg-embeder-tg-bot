@@ -148,10 +148,10 @@ def format_game_message_html(wtg_data) -> str:
     
     # Truncate comment if too long
     if len(comment_text) > 1000:
-        comment_text = comment_text[:297] + "..."
+        comment_text = comment_text[:997] + "..."
     
     message = f"""🎮 <b>{title}</b>
-⭐ Score: {score}/100
+⭐ Score: {score}/10
 👤 Comment by: {author} - {date}
 
 💬 {comment_text}

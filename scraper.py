@@ -63,28 +63,25 @@ class WTGScraper:
             
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # Extract game information from HTML
-            game_info = self._extract_game_info(soup, url)
-            if not game_info:
-                logger.error("Failed to extract game information")
-                return None
-            
-            # Use API to get comment information with game slug
-            comment_info = self._get_comment_from_api(comment_id, game_slug)
-            if not comment_info:
-                logger.warning("API comment extraction failed, using HTML fallback")
+            # Use API to get both game and comment information
+            wtg_data = self._get_data_from_api(comment_id, game_slug, url)
+            if not wtg_data:
+                logger.warning("API extraction failed, using HTML fallback")
                 # Fallback to HTML parsing
+                game_info = self._extract_game_info(soup, url)
                 comment_info = self._extract_comment_info_fallback(soup, comment_id)
+                
+                if not game_info or not comment_info:
+                    logger.error("Failed to extract information using fallback methods")
+                    return None
+                
+                wtg_data = WTGData(
+                    game=game_info,
+                    comment=comment_info,
+                    original_url=url
+                )
             
-            if not comment_info:
-                logger.error("Failed to extract comment information")
-                return None
-            
-            return WTGData(
-                game=game_info,
-                comment=comment_info,
-                original_url=url
-            )
+            return wtg_data
             
         except requests.RequestException as e:
             logger.error(f"Network error while scraping {url}: {e}")
@@ -498,6 +495,14 @@ class WTGScraper:
                 # Extract review text - try different possible field names
                 review_text = (review_data.get('text') or 'Review text not available')
                 
+                # Extract score/grade from the review
+                grade = review_data.get('grade')
+                if grade is not None:
+                    # Convert from 0-100 scale to 0-10 scale
+                    score = str(int(grade / 10)) if isinstance(grade, (int, float)) else "N/A"
+                else:
+                    score = "N/A"
+                
                 # Extract date
                 date_created = (review_data.get('created_at') or 
                               review_data.get('updated_at') or 
@@ -522,6 +527,126 @@ class WTGScraper:
                     date=str(date_created),
                     text=str(review_text),
                     comment_id=comment_id
+                )
+            else:
+                logger.warning("No data found in API response or data is empty")
+                logger.debug(f"Full API response: {api_data}")
+                return None
+                
+        except requests.RequestException as e:
+            logger.error(f"API request error: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error processing API response: {e}")
+            return None
+    
+    def _get_data_from_api(self, comment_id: str, game_slug: str, original_url: str) -> Optional[WTGData]:
+        """
+        Get both game and comment information using the WTG API.
+        
+        Args:
+            comment_id: The sharing ID of the comment
+            game_slug: The game slug extracted from URL
+            original_url: Original URL for reference
+            
+        Returns:
+            WTGData object with complete information or None if failed
+        """
+        try:
+            # Construct API URL
+            api_url = "https://wtg.com.ua/api/backlog/user_review/user"
+            params = {
+                'sharing_id': comment_id,
+                'game_slug': game_slug,
+                'page': 1,
+                'per_page': 1
+            }
+            
+            logger.info(f"Calling API: {api_url} with params: {params}")
+            
+            # Make API request
+            response = self.session.get(api_url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            # Ensure proper UTF-8 encoding for Cyrillic text
+            response.encoding = 'utf-8'
+            
+            # Parse JSON response
+            api_data = response.json()
+            logger.info(f"API response status: {response.status_code}")
+            logger.info(f"API response keys: {list(api_data.keys()) if isinstance(api_data, dict) else 'Not a dict'}")
+            
+            # Check if we have data in the response
+            if 'user_reviews' in api_data and api_data['user_reviews']:
+                data_content = api_data['user_reviews']
+                
+                # The data might be a list of reviews or a single review object
+                if isinstance(data_content, list) and len(data_content) > 0:
+                    review_data = data_content[0]
+                elif isinstance(data_content, dict):
+                    review_data = data_content
+                else:
+                    logger.warning("Unexpected data structure in API response")
+                    return None
+                
+                logger.info(f"Review data keys: {list(review_data.keys()) if isinstance(review_data, dict) else 'Not a dict'}")
+                
+                # Extract comment information
+                author = review_data.get('user', 'Unknown User')
+                review_text = review_data.get('text', 'Review text not available')
+                
+                # Extract and format date
+                date_created = (review_data.get('created_at') or 
+                              review_data.get('updated_at') or 
+                              'Unknown Date')
+                
+                if date_created and date_created != 'Unknown Date':
+                    try:
+                        from datetime import datetime
+                        if 'T' in str(date_created):
+                            dt = datetime.fromisoformat(str(date_created).replace('Z', '+00:00'))
+                            date_created = dt.strftime('%d.%m.%Y')
+                    except Exception as e:
+                        logger.debug(f"Date parsing error: {e}")
+                        # Keep original date if parsing fails
+                        pass
+                
+                # Extract game information from the API response
+                game_info_data = review_data.get('game_info', {})
+                
+                # Extract game title
+                game_title = game_info_data.get('title', 'Unknown Game')
+                
+                # Extract and convert score from grade (0-100 to 0-10)
+                grade = review_data.get('grade')
+                if grade is not None and isinstance(grade, (int, float)):
+                    score = str(int(grade / 10))
+                else:
+                    score = "N/A"
+                
+                # Extract game image URL
+                image_url = game_info_data.get('image_url', '')
+                
+                logger.info(f"Successfully extracted data from API - Game: {game_title}, Score: {score}, Author: {author}")
+                
+                # Create GameInfo and CommentInfo objects
+                game_info = GameInfo(
+                    title=game_title,
+                    score=score,
+                    image_url=image_url
+                )
+                
+                comment_info = CommentInfo(
+                    author=author,
+                    date=str(date_created),
+                    text=str(review_text),
+                    comment_id=comment_id
+                )
+                
+                return WTGData(
+                    game=game_info,
+                    comment=comment_info,
+                    original_url=original_url
                 )
             else:
                 logger.warning("No data found in API response or data is empty")
